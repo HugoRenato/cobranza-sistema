@@ -1,0 +1,11 @@
+
+> web@0.1.0 dev
+> next dev --webpack -p 3001
+
+▲ Next.js 16.2.9 (webpack)
+- Local:         http://localhost:3001
+- Network:       http://100.100.30.106:3001
+- Environments: .env.local
+✓ Ready in 701ms
+
+ GET /login 200 in 2.3s (next.js: 2.1s, application-code: 219ms)

@@ -1,10 +1,25 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Req,
+} from '@nestjs/common';
+import { AuditAction } from '@prisma/client';
+import type { Request } from 'express';
+import { AuditService } from '../audit/audit.service';
 import { CreateVentaDto } from './dto/create-venta.dto';
 import { VentasService } from './ventas.service';
 
 @Controller('ventas')
 export class VentasController {
-  constructor(private readonly ventasService: VentasService) {}
+  constructor(
+    private readonly ventasService: VentasService,
+    private readonly auditService: AuditService,
+  ) {}
 
   @Get()
   findAll() {
@@ -21,8 +36,44 @@ export class VentasController {
     return this.ventasService.findOne(id);
   }
 
+  @Patch(':id/anular')
+  async anular(@Param('id', ParseIntPipe) id: number, @Req() request: Request) {
+    const before = await this.ventasService.findOne(id);
+    const venta = await this.ventasService.anular(id);
+    await this.auditService.logWithContext(
+      this.auditService.contextFromRequest(request),
+      {
+        action: AuditAction.ANULAR,
+        module: 'ventas',
+        entity: 'VentaCredito',
+        entityId: id,
+        description: `Venta anulada #${id}`,
+        beforeData: before,
+        afterData: venta,
+      },
+    );
+
+    return venta;
+  }
+
   @Post()
-  create(@Body() createVentaDto: CreateVentaDto) {
-    return this.ventasService.create(createVentaDto);
+  async create(
+    @Body() createVentaDto: CreateVentaDto,
+    @Req() request: Request,
+  ) {
+    const venta = await this.ventasService.create(createVentaDto);
+    await this.auditService.logWithContext(
+      this.auditService.contextFromRequest(request),
+      {
+        action: AuditAction.CREATE,
+        module: 'ventas',
+        entity: 'VentaCredito',
+        entityId: venta?.id,
+        description: `Venta creada #${venta?.id}`,
+        afterData: venta,
+      },
+    );
+
+    return venta;
   }
 }

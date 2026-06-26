@@ -23,7 +23,10 @@ enum TipoMovimientoCuenta {
   VENTA
   ABONO
   AJUSTE
+  AJUSTE_PRECIO
   ANULACION
+  COMPENSACION_ABONO
+  COMPENSACION_CARGO
 }
 
 enum MedioPago {
@@ -40,18 +43,88 @@ enum PagoEstado {
   ANULADO
 }
 
+enum ClienteTipoCuenta {
+  CLIENTE_MAYORISTA
+  TIENDA_INTERNA
+  OTRO
+}
+
+enum UnidadNegocio {
+  MAYORISTA
+  TIENDA_ABARROTES
+}
+
+enum CompensacionEstado {
+  VALIDA
+  ANULADA
+}
+
+enum VentaOrigen {
+  PRODUCTOS
+  COMPENSACION
+}
+
+enum AjusteVentaTipo {
+  PRECIO_UNITARIO
+  DESCUENTO_COMERCIAL
+  ERROR_REGISTRO
+  OTRO
+}
+
+enum AjusteVentaEstado {
+  VALIDO
+  ANULADO
+}
+
+enum UsuarioEstado {
+  ACTIVO
+  INACTIVO
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  ANULAR
+  AJUSTE
+  COMPENSACION
+  DOWNLOAD
+}
+
+enum MensajeWhatsAppEstado {
+  PENDIENTE
+  ENVIADO
+  FALLIDO
+  CANCELADO
+}
+
+enum MensajeWhatsAppTipo {
+  VENTA_CREDITO
+  ABONO
+  ESTADO_CUENTA
+  RECORDATORIO
+  ANULACION
+}
+
 model Cliente {
-  id          Int                       @id @default(autoincrement())
-  nombre      String
-  documento   String?
-  telefono    String?
-  direccion   String?
-  activo      Boolean                   @default(true)
-  createdAt   DateTime                  @default(now())
-  updatedAt   DateTime                  @updatedAt
-  ventas      VentaCredito[]
-  movimientos MovimientoCuentaCliente[]
-  pagos       PagoAbono[]
+  id                    Int                       @id @default(autoincrement())
+  nombre                String
+  documento             String?
+  telefono              String?
+  direccion             String?
+  activo                Boolean                   @default(true)
+  tipoCuenta            ClienteTipoCuenta         @default(CLIENTE_MAYORISTA)
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  ventas                VentaCredito[]
+  movimientos           MovimientoCuentaCliente[]
+  pagos                 PagoAbono[]
+  mensajesWhatsApp      MensajeWhatsApp[]
+  ajustesVenta          AjusteVenta[]
+  compensacionesOrigen  CompensacionCuenta[]      @relation("CompensacionesOrigen")
+  compensacionesDestino CompensacionCuenta[]      @relation("CompensacionesDestino")
 }
 
 model Producto {
@@ -68,65 +141,103 @@ model Producto {
   ventaDetalles VentaDetalle[]
 }
 
+model Usuario {
+  id          Int           @id @default(autoincrement())
+  nombre      String
+  email       String        @unique
+  password    String
+  estado      UsuarioEstado @default(ACTIVO)
+  ultimoLogin DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model AuditLog {
+  id           Int         @id @default(autoincrement())
+  usuarioId    Int?
+  usuarioEmail String?
+  action       AuditAction
+  module       String
+  entity       String?
+  entityId     String?
+  description  String
+  beforeData   Json?
+  afterData    Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime    @default(now())
+}
+
 model VentaCredito {
-  id                  Int                       @id @default(autoincrement())
-  clienteId           Int
-  cliente             Cliente                   @relation(fields: [clienteId], references: [id])
-  fechaVenta          DateTime                  @default(now())
-  fechaCompromisoPago DateTime?
-  total               Decimal                   @db.Decimal(10, 2)
-  saldoPendiente      Decimal                   @db.Decimal(10, 2)
-  estado              VentaEstado               @default(PENDIENTE)
-  observacion         String?
-  createdAt           DateTime                  @default(now())
-  updatedAt           DateTime                  @updatedAt
-  detalles            VentaDetalle[]
-  movimientos         MovimientoCuentaCliente[]
-  pagosAplicados      PagoAplicacion[]
+  id                      Int                       @id @default(autoincrement())
+  clienteId               Int
+  cliente                 Cliente                   @relation(fields: [clienteId], references: [id])
+  fechaVenta              DateTime                  @default(now())
+  fechaCompromisoPago     DateTime?
+  total                   Decimal                   @db.Decimal(10, 2)
+  saldoPendiente          Decimal                   @db.Decimal(10, 2)
+  estado                  VentaEstado               @default(PENDIENTE)
+  origen                  VentaOrigen               @default(PRODUCTOS)
+  observacion             String?
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  detalles                VentaDetalle[]
+  movimientos             MovimientoCuentaCliente[]
+  pagosAplicados          PagoAplicacion[]
+  mensajesWhatsApp        MensajeWhatsApp[]
+  ajustes                 AjusteVenta[]
+  compensacionDestino     CompensacionCuenta?       @relation("CompensacionVentaDestino")
+  compensacionesAplicadas CompensacionAplicacion[]
 }
 
 model VentaDetalle {
-  id             Int          @id @default(autoincrement())
+  id             Int           @id @default(autoincrement())
   ventaId        Int
-  venta          VentaCredito @relation(fields: [ventaId], references: [id])
+  venta          VentaCredito  @relation(fields: [ventaId], references: [id])
   productoId     Int
-  producto       Producto     @relation(fields: [productoId], references: [id])
-  cantidad       Decimal      @db.Decimal(10, 2)
-  precioUnitario Decimal      @db.Decimal(10, 2)
-  subtotal       Decimal      @db.Decimal(10, 2)
-  createdAt      DateTime     @default(now())
+  producto       Producto      @relation(fields: [productoId], references: [id])
+  cantidad       Decimal       @db.Decimal(10, 2)
+  precioUnitario Decimal       @db.Decimal(10, 2)
+  subtotal       Decimal       @db.Decimal(10, 2)
+  createdAt      DateTime      @default(now())
+  ajustes        AjusteVenta[]
 }
 
 model MovimientoCuentaCliente {
-  id          Int                  @id @default(autoincrement())
-  clienteId   Int
-  cliente     Cliente              @relation(fields: [clienteId], references: [id])
-  ventaId     Int?
-  venta       VentaCredito?        @relation(fields: [ventaId], references: [id])
-  pagoId      Int?                 @unique
-  pago        PagoAbono?           @relation(fields: [pagoId], references: [id])
-  tipo        TipoMovimientoCuenta
-  descripcion String
-  cargo       Decimal              @default(0) @db.Decimal(10, 2)
-  abono       Decimal              @default(0) @db.Decimal(10, 2)
-  saldo       Decimal              @db.Decimal(10, 2)
-  createdAt   DateTime             @default(now())
+  id             Int                  @id @default(autoincrement())
+  clienteId      Int
+  cliente        Cliente              @relation(fields: [clienteId], references: [id])
+  ventaId        Int?
+  venta          VentaCredito?        @relation(fields: [ventaId], references: [id])
+  pagoId         Int?                 @unique
+  pago           PagoAbono?           @relation(fields: [pagoId], references: [id])
+  compensacionId Int?
+  compensacion   CompensacionCuenta?  @relation(fields: [compensacionId], references: [id])
+  ajusteVentaId  Int?
+  ajusteVenta    AjusteVenta?         @relation(fields: [ajusteVentaId], references: [id])
+  tipo           TipoMovimientoCuenta
+  descripcion    String
+  cargo          Decimal              @default(0) @db.Decimal(10, 2)
+  abono          Decimal              @default(0) @db.Decimal(10, 2)
+  saldo          Decimal              @db.Decimal(10, 2)
+  createdAt      DateTime             @default(now())
 }
 
 model PagoAbono {
-  id           Int                      @id @default(autoincrement())
-  clienteId    Int
-  cliente      Cliente                  @relation(fields: [clienteId], references: [id])
-  monto        Decimal                  @db.Decimal(10, 2)
-  medioPago    MedioPago
-  fechaPago    DateTime                 @default(now())
-  referencia   String?
-  observacion  String?
-  estado       PagoEstado               @default(VALIDO)
-  createdAt    DateTime                 @default(now())
-  updatedAt    DateTime                 @updatedAt
-  aplicaciones PagoAplicacion[]
-  movimiento   MovimientoCuentaCliente?
+  id               Int                      @id @default(autoincrement())
+  clienteId        Int
+  cliente          Cliente                  @relation(fields: [clienteId], references: [id])
+  monto            Decimal                  @db.Decimal(10, 2)
+  medioPago        MedioPago
+  fechaPago        DateTime                 @default(now())
+  referencia       String?
+  observacion      String?
+  estado           PagoEstado               @default(VALIDO)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  aplicaciones     PagoAplicacion[]
+  movimiento       MovimientoCuentaCliente?
+  mensajesWhatsApp MensajeWhatsApp[]
 }
 
 model PagoAplicacion {
@@ -137,4 +248,74 @@ model PagoAplicacion {
   venta     VentaCredito @relation(fields: [ventaId], references: [id])
   monto     Decimal      @db.Decimal(10, 2)
   createdAt DateTime     @default(now())
+}
+
+model MensajeWhatsApp {
+  id              Int                   @id @default(autoincrement())
+  clienteId       Int
+  cliente         Cliente               @relation(fields: [clienteId], references: [id])
+  ventaId         Int?
+  venta           VentaCredito?         @relation(fields: [ventaId], references: [id])
+  pagoId          Int?
+  pago            PagoAbono?            @relation(fields: [pagoId], references: [id])
+  tipo            MensajeWhatsAppTipo
+  telefonoDestino String
+  mensaje         String                @db.Text
+  estado          MensajeWhatsAppEstado @default(PENDIENTE)
+  error           String?
+  enviadoAt       DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+}
+
+model CompensacionCuenta {
+  id              Int                       @id @default(autoincrement())
+  clienteOrigenId Int
+  clienteOrigen   Cliente                   @relation("CompensacionesOrigen", fields: [clienteOrigenId], references: [id])
+  cuentaDestinoId Int
+  cuentaDestino   Cliente                   @relation("CompensacionesDestino", fields: [cuentaDestinoId], references: [id])
+  ventaDestinoId  Int?                      @unique
+  ventaDestino    VentaCredito?             @relation("CompensacionVentaDestino", fields: [ventaDestinoId], references: [id])
+  monto           Decimal                   @db.Decimal(10, 2)
+  unidadNegocio   UnidadNegocio             @default(TIENDA_ABARROTES)
+  fecha           DateTime                  @default(now())
+  motivo          String
+  referencia      String?
+  observacion     String?
+  estado          CompensacionEstado        @default(VALIDA)
+  aplicaciones    CompensacionAplicacion[]
+  movimientos     MovimientoCuentaCliente[]
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+}
+
+model CompensacionAplicacion {
+  id             Int                @id @default(autoincrement())
+  compensacionId Int
+  compensacion   CompensacionCuenta @relation(fields: [compensacionId], references: [id])
+  ventaId        Int
+  venta          VentaCredito       @relation(fields: [ventaId], references: [id])
+  monto          Decimal            @db.Decimal(10, 2)
+  createdAt      DateTime           @default(now())
+}
+
+model AjusteVenta {
+  id               Int                       @id @default(autoincrement())
+  ventaId          Int
+  venta            VentaCredito              @relation(fields: [ventaId], references: [id])
+  ventaDetalleId   Int?
+  ventaDetalle     VentaDetalle?             @relation(fields: [ventaDetalleId], references: [id])
+  clienteId        Int
+  cliente          Cliente                   @relation(fields: [clienteId], references: [id])
+  tipo             AjusteVentaTipo           @default(PRECIO_UNITARIO)
+  estado           AjusteVentaEstado         @default(VALIDO)
+  precioAnterior   Decimal?                  @db.Decimal(10, 2)
+  precioNuevo      Decimal?                  @db.Decimal(10, 2)
+  cantidadAfectada Decimal?                  @db.Decimal(10, 2)
+  montoDiferencia  Decimal                   @db.Decimal(10, 2)
+  motivo           String
+  observacion      String?
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  movimientos      MovimientoCuentaCliente[]
 }

@@ -2,10 +2,17 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PagoEstado, Prisma, TipoMovimientoCuenta, VentaEstado } from '@prisma/client';
+import {
+  PagoEstado,
+  Prisma,
+  TipoMovimientoCuenta,
+  VentaEstado,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { CreatePagoDto } from './dto/create-pago.dto';
 
 const pagoInclude = {
@@ -20,7 +27,12 @@ const pagoInclude = {
 
 @Injectable()
 export class PagosService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(PagosService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly whatsappService: WhatsappService,
+  ) {}
 
   findAll() {
     return this.prisma.pagoAbono.findMany({
@@ -58,8 +70,8 @@ export class PagosService {
     });
   }
 
-  create(createPagoDto: CreatePagoDto) {
-    return this.prisma.$transaction(async (tx) => {
+  async create(createPagoDto: CreatePagoDto) {
+    const pagoCreado = await this.prisma.$transaction(async (tx) => {
       const cliente = await tx.cliente.findFirst({
         where: {
           id: createPagoDto.clienteId,
@@ -99,7 +111,11 @@ export class PagosService {
         where: {
           clienteId: createPagoDto.clienteId,
           estado: {
-            in: [VentaEstado.PENDIENTE, VentaEstado.PARCIAL],
+            in: [
+              VentaEstado.PENDIENTE,
+              VentaEstado.PARCIAL,
+              VentaEstado.VENCIDA,
+            ],
           },
           saldoPendiente: {
             gt: new Prisma.Decimal(0),
@@ -183,6 +199,100 @@ export class PagosService {
         include: pagoInclude,
       });
     });
+
+    await this.crearMensajeAbonoSeguro(pagoCreado?.id);
+
+    return pagoCreado;
+  }
+
+  async anular(id: number) {
+    const pagoAnulado = await this.prisma.$transaction(async (tx) => {
+      const pago = await tx.pagoAbono.findUnique({
+        where: { id },
+        include: pagoInclude,
+      });
+
+      if (!pago) {
+        throw new NotFoundException(`Pago con id ${id} no encontrado`);
+      }
+
+      if (pago.estado === PagoEstado.ANULADO) {
+        throw new BadRequestException(`Pago con id ${id} ya esta anulado`);
+      }
+
+      if (pago.estado !== PagoEstado.VALIDO) {
+        throw new BadRequestException('Solo se pueden anular pagos validos');
+      }
+
+      const ultimoMovimiento = await tx.movimientoCuentaCliente.findFirst({
+        where: { clienteId: pago.clienteId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const saldoAnterior = ultimoMovimiento?.saldo ?? new Prisma.Decimal(0);
+
+      const aplicacionesPorVenta = new Map<
+        number,
+        {
+          venta: (typeof pago.aplicaciones)[number]['venta'];
+          monto: Prisma.Decimal;
+        }
+      >();
+
+      for (const aplicacion of pago.aplicaciones) {
+        const acumulado = aplicacionesPorVenta.get(aplicacion.ventaId);
+
+        aplicacionesPorVenta.set(aplicacion.ventaId, {
+          venta: aplicacion.venta,
+          monto: (acumulado?.monto ?? new Prisma.Decimal(0)).plus(
+            aplicacion.monto,
+          ),
+        });
+      }
+
+      for (const [ventaId, aplicacion] of aplicacionesPorVenta) {
+        const nuevoSaldoVenta = aplicacion.venta.saldoPendiente.plus(
+          aplicacion.monto,
+        );
+        const nuevoEstadoVenta = this.getEstadoVentaPorSaldo(
+          nuevoSaldoVenta,
+          aplicacion.venta.total,
+        );
+
+        await tx.ventaCredito.update({
+          where: { id: ventaId },
+          data: {
+            saldoPendiente: nuevoSaldoVenta,
+            estado: nuevoEstadoVenta,
+          },
+        });
+      }
+
+      await tx.pagoAbono.update({
+        where: { id },
+        data: { estado: PagoEstado.ANULADO },
+      });
+
+      await tx.movimientoCuentaCliente.create({
+        data: {
+          clienteId: pago.clienteId,
+          ...(pago.movimiento ? {} : { pagoId: pago.id }),
+          tipo: TipoMovimientoCuenta.ANULACION,
+          descripcion: `Anulación de abono #${pago.id}`,
+          cargo: pago.monto,
+          abono: new Prisma.Decimal(0),
+          saldo: saldoAnterior.plus(pago.monto),
+        },
+      });
+
+      return tx.pagoAbono.findUnique({
+        where: { id },
+        include: pagoInclude,
+      });
+    });
+
+    await this.crearMensajeAnulacionPagoSeguro(pagoAnulado?.id);
+
+    return pagoAnulado;
   }
 
   private parseFechaPago(fecha?: string) {
@@ -197,5 +307,52 @@ export class PagosService {
     }
 
     return parsedDate;
+  }
+
+  private getEstadoVentaPorSaldo(
+    saldoPendiente: Prisma.Decimal,
+    total: Prisma.Decimal,
+  ) {
+    if (saldoPendiente.equals(0)) {
+      return VentaEstado.PAGADA;
+    }
+
+    if (saldoPendiente.equals(total) || saldoPendiente.greaterThan(total)) {
+      return VentaEstado.PENDIENTE;
+    }
+
+    return VentaEstado.PARCIAL;
+  }
+
+  private async crearMensajeAbonoSeguro(pagoId?: number) {
+    if (!pagoId) {
+      return;
+    }
+
+    try {
+      await this.whatsappService.crearMensajeAbono(pagoId);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo crear mensaje WhatsApp para pago ${pagoId}: ${this.getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async crearMensajeAnulacionPagoSeguro(pagoId?: number) {
+    if (!pagoId) {
+      return;
+    }
+
+    try {
+      await this.whatsappService.crearMensajeAnulacionPago(pagoId);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo crear mensaje WhatsApp de anulacion para pago ${pagoId}: ${this.getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private getErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
   }
 }

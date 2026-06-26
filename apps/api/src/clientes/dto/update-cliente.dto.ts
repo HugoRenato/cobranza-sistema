@@ -1,4 +1,11 @@
-import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
+import { ClienteTipoCuenta } from '@prisma/client';
+import {
+  IsBoolean,
+  IsEnum,
+  IsOptional,
+  IsString,
+  MinLength,
+} from 'class-validator';
 
 export class UpdateClienteDto {
   @IsOptional()
@@ -21,4 +28,8 @@ export class UpdateClienteDto {
   @IsOptional()
   @IsBoolean()
   activo?: boolean;
+
+  @IsOptional()
+  @IsEnum(ClienteTipoCuenta)
+  tipoCuenta?: ClienteTipoCuenta;
 }

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { AuditService } from '../audit/audit.service';
 import { ClientesController } from './clientes.controller';
 import { ClientesService } from './clientes.service';
 
@@ -17,6 +18,13 @@ describe('ClientesController', () => {
             findOne: jest.fn(),
             update: jest.fn(),
             deactivate: jest.fn(),
+          },
+        },
+        {
+          provide: AuditService,
+          useValue: {
+            contextFromRequest: jest.fn(),
+            logWithContext: jest.fn(),
           },
         },
       ],

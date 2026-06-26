@@ -2,10 +2,17 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, TipoMovimientoCuenta, VentaEstado } from '@prisma/client';
+import {
+  PagoEstado,
+  Prisma,
+  TipoMovimientoCuenta,
+  VentaEstado,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { CreateVentaDto } from './dto/create-venta.dto';
 
 const ventaInclude = {
@@ -15,11 +22,27 @@ const ventaInclude = {
       producto: true,
     },
   },
+  pagosAplicados: {
+    include: {
+      pago: true,
+    },
+  },
+  movimientos: true,
+  ajustes: {
+    include: {
+      movimientos: true,
+    },
+  },
 };
 
 @Injectable()
 export class VentasService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(VentasService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly whatsappService: WhatsappService,
+  ) {}
 
   findAll() {
     return this.prisma.ventaCredito.findMany({
@@ -57,8 +80,8 @@ export class VentasService {
     });
   }
 
-  create(createVentaDto: CreateVentaDto) {
-    return this.prisma.$transaction(async (tx) => {
+  async create(createVentaDto: CreateVentaDto) {
+    const ventaCreada = await this.prisma.$transaction(async (tx) => {
       const cliente = await tx.cliente.findFirst({
         where: {
           id: createVentaDto.clienteId,
@@ -106,7 +129,10 @@ export class VentasService {
             ? producto.precioBase
             : new Prisma.Decimal(item.precioUnitario);
 
-        if (cantidad.lessThanOrEqualTo(0) || precioUnitario.lessThanOrEqualTo(0)) {
+        if (
+          cantidad.lessThanOrEqualTo(0) ||
+          precioUnitario.lessThanOrEqualTo(0)
+        ) {
           throw new BadRequestException(
             'La cantidad y el precio unitario deben ser mayores a 0',
           );
@@ -126,18 +152,17 @@ export class VentasService {
       );
 
       if (total.lessThanOrEqualTo(0)) {
-        throw new BadRequestException('El total de la venta debe ser mayor a 0');
+        throw new BadRequestException(
+          'El total de la venta debe ser mayor a 0',
+        );
       }
 
-      const stockRequeridoPorProducto = detalles.reduce(
-        (stockMap, detalle) => {
-          const stockActual =
-            stockMap.get(detalle.productoId) ?? new Prisma.Decimal(0);
-          stockMap.set(detalle.productoId, stockActual.plus(detalle.cantidad));
-          return stockMap;
-        },
-        new Map<number, Prisma.Decimal>(),
-      );
+      const stockRequeridoPorProducto = detalles.reduce((stockMap, detalle) => {
+        const stockActual =
+          stockMap.get(detalle.productoId) ?? new Prisma.Decimal(0);
+        stockMap.set(detalle.productoId, stockActual.plus(detalle.cantidad));
+        return stockMap;
+      }, new Map<number, Prisma.Decimal>());
 
       for (const [productoId, cantidadRequerida] of stockRequeridoPorProducto) {
         const producto = productosPorId.get(productoId);
@@ -165,8 +190,7 @@ export class VentasService {
         where: { clienteId: createVentaDto.clienteId },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
-      const saldoAnterior =
-        ultimoMovimiento?.saldo ?? new Prisma.Decimal(0);
+      const saldoAnterior = ultimoMovimiento?.saldo ?? new Prisma.Decimal(0);
       const saldoActualizado = saldoAnterior.plus(total);
 
       const venta = await tx.ventaCredito.create({
@@ -220,6 +244,86 @@ export class VentasService {
         include: ventaInclude,
       });
     });
+
+    await this.crearMensajeVentaCreditoSeguro(ventaCreada?.id);
+
+    return ventaCreada;
+  }
+
+  async anular(id: number) {
+    const ventaAnulada = await this.prisma.$transaction(async (tx) => {
+      const venta = await tx.ventaCredito.findUnique({
+        where: { id },
+        include: ventaInclude,
+      });
+
+      if (!venta) {
+        throw new NotFoundException(`Venta con id ${id} no encontrada`);
+      }
+
+      if (venta.estado === VentaEstado.ANULADA) {
+        throw new BadRequestException(`Venta con id ${id} ya esta anulada`);
+      }
+
+      const tienePagosValidos = venta.pagosAplicados.some(
+        (aplicacion) => aplicacion.pago.estado === PagoEstado.VALIDO,
+      );
+
+      if (tienePagosValidos) {
+        throw new BadRequestException(
+          'No se puede anular una venta con pagos válidos aplicados. Primero anule los pagos relacionados.',
+        );
+      }
+
+      const saldoPendienteAnterior = venta.saldoPendiente;
+      const ultimoMovimiento = await tx.movimientoCuentaCliente.findFirst({
+        where: { clienteId: venta.clienteId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const saldoAnterior = ultimoMovimiento?.saldo ?? new Prisma.Decimal(0);
+
+      await tx.ventaCredito.update({
+        where: { id },
+        data: {
+          estado: VentaEstado.ANULADA,
+          saldoPendiente: new Prisma.Decimal(0),
+        },
+      });
+
+      for (const detalle of venta.detalles) {
+        if (detalle.producto.stock !== null) {
+          await tx.producto.update({
+            where: { id: detalle.productoId },
+            data: {
+              stock: {
+                increment: detalle.cantidad,
+              },
+            },
+          });
+        }
+      }
+
+      await tx.movimientoCuentaCliente.create({
+        data: {
+          clienteId: venta.clienteId,
+          ventaId: venta.id,
+          tipo: TipoMovimientoCuenta.ANULACION,
+          descripcion: `Anulación de venta a crédito #${venta.id}`,
+          cargo: new Prisma.Decimal(0),
+          abono: saldoPendienteAnterior,
+          saldo: saldoAnterior.minus(saldoPendienteAnterior),
+        },
+      });
+
+      return tx.ventaCredito.findUnique({
+        where: { id },
+        include: ventaInclude,
+      });
+    });
+
+    await this.crearMensajeAnulacionVentaSeguro(ventaAnulada?.id);
+
+    return ventaAnulada;
   }
 
   private parseFechaCompromisoPago(fecha?: string) {
@@ -234,5 +338,37 @@ export class VentasService {
     }
 
     return parsedDate;
+  }
+
+  private async crearMensajeVentaCreditoSeguro(ventaId?: number) {
+    if (!ventaId) {
+      return;
+    }
+
+    try {
+      await this.whatsappService.crearMensajeVentaCredito(ventaId);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo crear mensaje WhatsApp para venta ${ventaId}: ${this.getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async crearMensajeAnulacionVentaSeguro(ventaId?: number) {
+    if (!ventaId) {
+      return;
+    }
+
+    try {
+      await this.whatsappService.crearMensajeAnulacionVenta(ventaId);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo crear mensaje WhatsApp de anulacion para venta ${ventaId}: ${this.getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private getErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
   }
 }
