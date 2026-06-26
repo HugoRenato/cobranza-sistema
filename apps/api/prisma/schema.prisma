@@ -11,13 +11,86 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum VentaEstado {
+  PENDIENTE
+  PARCIAL
+  PAGADA
+  ANULADA
+  VENCIDA
+}
+
+enum TipoMovimientoCuenta {
+  VENTA
+  ABONO
+  AJUSTE
+  ANULACION
+}
+
 model Cliente {
-  id        Int      @id @default(autoincrement())
-  nombre    String
-  documento String?
-  telefono  String?
-  direccion String?
-  activo    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int                       @id @default(autoincrement())
+  nombre      String
+  documento   String?
+  telefono    String?
+  direccion   String?
+  activo      Boolean                   @default(true)
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+  ventas      VentaCredito[]
+  movimientos MovimientoCuentaCliente[]
+}
+
+model Producto {
+  id            Int            @id @default(autoincrement())
+  nombre        String
+  codigo        String?        @unique
+  descripcion   String?
+  unidad        String?
+  precioBase    Decimal        @db.Decimal(10, 2)
+  stock         Decimal?       @db.Decimal(10, 2)
+  activo        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  ventaDetalles VentaDetalle[]
+}
+
+model VentaCredito {
+  id                  Int                       @id @default(autoincrement())
+  clienteId           Int
+  cliente             Cliente                   @relation(fields: [clienteId], references: [id])
+  fechaVenta          DateTime                  @default(now())
+  fechaCompromisoPago DateTime?
+  total               Decimal                   @db.Decimal(10, 2)
+  saldoPendiente      Decimal                   @db.Decimal(10, 2)
+  estado              VentaEstado               @default(PENDIENTE)
+  observacion         String?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  detalles            VentaDetalle[]
+  movimientos         MovimientoCuentaCliente[]
+}
+
+model VentaDetalle {
+  id             Int          @id @default(autoincrement())
+  ventaId        Int
+  venta          VentaCredito @relation(fields: [ventaId], references: [id])
+  productoId     Int
+  producto       Producto     @relation(fields: [productoId], references: [id])
+  cantidad       Decimal      @db.Decimal(10, 2)
+  precioUnitario Decimal      @db.Decimal(10, 2)
+  subtotal       Decimal      @db.Decimal(10, 2)
+  createdAt      DateTime     @default(now())
+}
+
+model MovimientoCuentaCliente {
+  id          Int                  @id @default(autoincrement())
+  clienteId   Int
+  cliente     Cliente              @relation(fields: [clienteId], references: [id])
+  ventaId     Int?
+  venta       VentaCredito?        @relation(fields: [ventaId], references: [id])
+  tipo        TipoMovimientoCuenta
+  descripcion String
+  cargo       Decimal              @default(0) @db.Decimal(10, 2)
+  abono       Decimal              @default(0) @db.Decimal(10, 2)
+  saldo       Decimal              @db.Decimal(10, 2)
+  createdAt   DateTime             @default(now())
 }
