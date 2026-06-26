@@ -26,6 +26,20 @@ enum TipoMovimientoCuenta {
   ANULACION
 }
 
+enum MedioPago {
+  EFECTIVO
+  YAPE
+  PLIN
+  TRANSFERENCIA
+  TARJETA
+  OTRO
+}
+
+enum PagoEstado {
+  VALIDO
+  ANULADO
+}
+
 model Cliente {
   id          Int                       @id @default(autoincrement())
   nombre      String
@@ -37,6 +51,7 @@ model Cliente {
   updatedAt   DateTime                  @updatedAt
   ventas      VentaCredito[]
   movimientos MovimientoCuentaCliente[]
+  pagos       PagoAbono[]
 }
 
 model Producto {
@@ -67,6 +82,7 @@ model VentaCredito {
   updatedAt           DateTime                  @updatedAt
   detalles            VentaDetalle[]
   movimientos         MovimientoCuentaCliente[]
+  pagosAplicados      PagoAplicacion[]
 }
 
 model VentaDetalle {
@@ -87,10 +103,38 @@ model MovimientoCuentaCliente {
   cliente     Cliente              @relation(fields: [clienteId], references: [id])
   ventaId     Int?
   venta       VentaCredito?        @relation(fields: [ventaId], references: [id])
+  pagoId      Int?                 @unique
+  pago        PagoAbono?           @relation(fields: [pagoId], references: [id])
   tipo        TipoMovimientoCuenta
   descripcion String
   cargo       Decimal              @default(0) @db.Decimal(10, 2)
   abono       Decimal              @default(0) @db.Decimal(10, 2)
   saldo       Decimal              @db.Decimal(10, 2)
   createdAt   DateTime             @default(now())
+}
+
+model PagoAbono {
+  id           Int                      @id @default(autoincrement())
+  clienteId    Int
+  cliente      Cliente                  @relation(fields: [clienteId], references: [id])
+  monto        Decimal                  @db.Decimal(10, 2)
+  medioPago    MedioPago
+  fechaPago    DateTime                 @default(now())
+  referencia   String?
+  observacion  String?
+  estado       PagoEstado               @default(VALIDO)
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  aplicaciones PagoAplicacion[]
+  movimiento   MovimientoCuentaCliente?
+}
+
+model PagoAplicacion {
+  id        Int          @id @default(autoincrement())
+  pagoId    Int
+  pago      PagoAbono    @relation(fields: [pagoId], references: [id])
+  ventaId   Int
+  venta     VentaCredito @relation(fields: [ventaId], references: [id])
+  monto     Decimal      @db.Decimal(10, 2)
+  createdAt DateTime     @default(now())
 }
